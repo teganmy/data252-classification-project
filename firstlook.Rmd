@@ -1,0 +1,147 @@
+---
+title: "Testing the dataset"
+author: "Gabriella Weis"
+date: "2026-03-31"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Librarys and Data
+
+```{r}
+library(tidyverse)
+library(GGally)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(class)
+```
+
+```{r}
+galaxy <- read_csv("galaxy.csv")
+qso <- read_csv("qso.csv")
+star <- read_csv("star.csv")
+```
+## Wrangling
+
+```{r}
+ds=star %>%
+  rbind(galaxy) %>%
+  rbind(qso) %>%
+  select(-specobjid,-objid,-redshift) %>%
+  mutate(`u-g`=u-g,`g-r`=g-r,`r-i`=r-i,`i-z`=i-z)
+head(ds)
+```
+
+## GGPairs
+
+```{r}
+ggpairs(ds, aes(color=class), columns=c("u-g","g-r","r-i","i-z"))
+```
+
+## Testing and Training Splits
+
+```{r}
+set.seed(1)
+
+caretSamp <- createDataPartition(ds$class , 
+                                        p = 0.7, 
+                                        list = FALSE)
+
+## SPLIT TESTING AND TRAINING
+trainCaret  <- ds[caretSamp, ]
+testCaret <- ds[-caretSamp, ]
+```
+
+### KNN
+
+```{r}
+set.seed(1)
+
+model <- train(
+  class ~., 
+  data = trainCaret, 
+  method = "knn",
+  trControl = trainControl("cv", number = 10),
+  preProcess = c("range"),
+  tuneLength = 20
+)
+# Plot model accuracy vs different values of k
+plot(model)
+
+# Print the best tuning parameter k that
+# maximizes model accuracy
+model$bestTune
+
+predicted.classes <- model %>% predict(testCaret)
+head(predicted.classes)
+
+# Compute model accuracy rate
+cmCaret<-table(predicted.classes, testCaret$class)
+cmCaret
+
+### THE CARET WAY!
+confusionMatrix(cmCaret)
+```
+
+### Tree
+
+```{r}
+set.seed(1)
+
+classTree<- rpart(class ~ .,
+                  data = trainCaret,
+                  method = "class"
+                  )
+
+### PLOT TREE
+rpart.plot(classTree)
+
+### Plot CP
+plotcp(classTree)
+
+printcp(classTree)
+
+## WHICH CP
+minCP<-classTree$cptable[which.min(classTree$cptable[,"xerror"]),"CP"]
+minCP
+```
+
+### Pruned Tree
+
+```{r}
+set.seed(1)
+
+prune_classTree <- prune(classTree, cp = minCP)
+rpart.plot(prune_classTree)
+```
+
+### Unpruned vs. Pruned Predictions (Same)
+
+```{r}
+## DEFAULT TREE 
+### PREDICT
+predTree1<-predict(classTree, testCaret, type="class")
+
+### CONFUSION MATRIX
+cmTree1<-table(testCaret$class, predTree1)
+cmTree1
+
+#### CORRECT RATE
+mean(testCaret$class==predTree1)
+
+## PRUNED TREE 
+### PREDICT
+predTree2<-predict(prune_classTree , testCaret, type="class")
+
+### CONFUSION MATRIX
+cmTree2<-table(testCaret$class, predTree2)
+cmTree2
+
+#### CORRECT RATE
+mean(testCaret$class==predTree2)
+```
+
