@@ -1,0 +1,317 @@
+---
+title: "Part 1"
+author: "Gabriella Weis"
+date: "2026-03-31"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Part 1
+
+## Libraries and Data
+
+```{r,message=FALSE,warning=FALSE}
+library(tidyverse)
+library(GGally)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(class)
+library(ipred)
+library(randomForest)
+library(vip)
+library(xgboost)
+```
+
+```{r}
+galaxy <- read_csv("galaxy.csv")
+qso <- read_csv("qso.csv")
+star <- read_csv("star.csv")
+```
+
+## Wrangling
+
+```{r}
+ds=star %>%
+  rbind(galaxy) %>%
+  rbind(qso) %>%
+  select(-specobjid,-objid,-redshift) %>%
+  mutate(class=as.factor(class)) %>%
+  mutate(`u-g`=u-g,`g-r`=g-r,`r-i`=r-i,`i-z`=i-z)
+head(ds)
+```
+
+## GGPairs
+
+```{r}
+ggpairs(ds, aes(color=class), columns=c("u-g","g-r","r-i","i-z"))
+```
+
+## Variables (all unitless)
+
+| Variable Name | Type | Definition |
+|------------------------|------------------------|------------------------|
+| class | categorical (3 levels) | category of object (star, quasar, galaxy) |
+| redshift | numeric | how fast an object is moving away from us |
+| u-g | numeric | color scale calculated from flux magnitudes u and g |
+| g-r | numeric | color scale calculated from flux magnitudes g and r |
+| r-i | numeric | color scale calculated from flux magnitudes r and i |
+| i-z | numeric | color scale calculated from flux magnitudes i and z |
+
+**Important Note**: During initial KNN and Classification Tree model creation, we noticed that redshift was too prevalent of a predictor, and often unatainable for use in real life. Therefore, we chose to exclude it from the models for the time being.
+
+## KNN and Classification Tree
+
+### Testing and Training Splits
+
+```{r}
+set.seed(1)
+
+caretSamp <- createDataPartition(ds$class , 
+                                        p = 0.7, 
+                                        list = FALSE)
+
+## SPLIT TESTING AND TRAINING
+trainCaret  <- ds[caretSamp, ]
+testCaret <- ds[-caretSamp, ]
+```
+
+### KNN
+
+```{r}
+set.seed(1)
+
+model <- train(
+  class ~., 
+  data = trainCaret, 
+  method = "knn",
+  trControl = trainControl("cv", number = 10),
+  preProcess = c("range"),
+  tuneLength = 20
+)
+# Plot model accuracy vs different values of k
+plot(model)
+
+# Print the best tuning parameter k that
+# maximizes model accuracy
+model$bestTune
+
+predicted.classes <- model %>% predict(testCaret)
+head(predicted.classes)
+
+# Compute model accuracy rate
+cmCaret<-table(predicted.classes, testCaret$class)
+#cmCaret
+
+### THE CARET WAY!
+confusionMatrix(cmCaret)
+```
+
+**Explanation**: The best value of k is 5, as determined by cross validation. The confusion matrix and accuracy rating (over 75%) shows that KNN produces a relatively good model. We noticed that it had some difficulty differentiating between galaxies and stars, which proved a theme across models.
+
+### Basic Tree
+
+```{r}
+set.seed(1)
+
+classTree<- rpart(class ~ .,
+                  data = trainCaret,
+                  method = "class"
+                  )
+
+### PLOT TREE
+rpart.plot(classTree)
+
+### Plot CP
+plotcp(classTree)
+
+printcp(classTree)
+
+## WHICH CP
+minCP<-classTree$cptable[which.min(classTree$cptable[,"xerror"]),"CP"]
+minCP
+```
+
+### Pruned Tree
+
+```{r}
+set.seed(1)
+
+prune_classTree <- prune(classTree, cp = minCP)
+rpart.plot(prune_classTree)
+```
+
+### Unpruned vs. Pruned Predictions (Same)
+
+```{r}
+## DEFAULT TREE 
+### PREDICT
+predTree1<-predict(classTree, testCaret, type="class")
+
+### CONFUSION MATRIX
+cmTree1<-table(testCaret$class, predTree1)
+cmTree1
+
+#### CORRECT RATE
+mean(testCaret$class==predTree1)
+
+## PRUNED TREE 
+### PREDICT
+predTree2<-predict(prune_classTree , testCaret, type="class")
+
+### CONFUSION MATRIX
+cmTree2<-table(testCaret$class, predTree2)
+cmTree2
+
+#### CORRECT RATE
+mean(testCaret$class==predTree2)
+```
+
+**Explanation**: The classification tree was the same pruned as it was unpruned, and performed much better than the KNN model, as can be seen by the confusion matrix and the accuracy rating (over 90%). The star/galaxy classification uncertainty remains a problem, though significantly less so in this model.
+
+# Part 2
+
+## Bagging
+
+```{r}
+set.seed(1)
+
+pimaBag <- bagging(class ~ .,
+                   data = trainCaret,
+                   nbagg = 150,   
+                   coob = TRUE,
+                   control = rpart.control(minsplit = 2, cp = 0))
+
+## PREDICT
+predBag<-predict(pimaBag, testCaret, type="class")
+
+## CONFUSION MATRIX
+cmBag<-table(testCaret$class, predBag)
+cmBag
+
+## CORRECT RATE
+mean(testCaret$class==predBag)
+```
+
+## Random Forest
+
+```{r}
+set.seed(1)
+
+caretRF <- train(class ~., 
+               data = trainCaret, 
+               method = "rf",
+               trControl = trainControl("cv", number = 10),
+               importance = TRUE
+)
+# Best tuning parameter
+caretRF$bestTune
+
+# Final model
+caretRF$finalModel
+
+## PREDICT
+predCaretRF <- caretRF %>% predict(testCaret)
+
+## TABLE
+table(predCaretRF, testCaret$class)
+
+## MEAN
+mean(predCaretRF == testCaret$class)
+```
+
+```{r}
+# Plot MeanDecreaseAccuracy
+varImpPlot(caretRF$finalModel, type = 1)
+# Plot MeanDecreaseGini
+varImpPlot(caretRF$finalModel, type = 2)
+
+vip(caretRF$finalModel, type = 1) 
+vip(caretRF$finalModel, type = 2)
+```
+
+## Boosting
+
+```{r, warning=FALSE}
+library(tidymodels)
+
+# Define the model
+xgb_model <- boost_tree() %>%
+  set_engine("xgboost") %>%
+  set_mode("classification")
+
+# Define the workflow
+xgb_workflow <- workflow() %>%
+  add_model(xgb_model) %>%
+  add_formula(class ~.)
+
+# Define 10-fold cross-validation
+cv_folds <- vfold_cv(trainCaret, v = 10)
+
+# Fit with resampling
+xgb_results <- fit_resamples(
+  xgb_workflow,
+  resamples = cv_folds,
+  control = control_resamples(save_pred = TRUE)
+)
+
+# View CV metrics
+collect_metrics(xgb_results)
+
+# Fit final model on full training data
+final_fit <- fit(xgb_workflow, data = trainCaret)
+
+# Make predictions on the test data
+predBoost <- final_fit %>% predict(testCaret)
+
+## TABLE
+table(predBoost$.pred_class, testCaret$class)
+
+mean(predBoost$.pred_class == testCaret$class)
+```
+
+# Part 3
+
+## Collapse Categorical Variable
+
+```{r}
+col_ds=ds %>%
+  filter(class!="QSO") %>%
+  mutate(class=ifelse(class=="STAR",0,1))
+
+head(col_ds)
+```
+
+## Simple Logistic Regression
+
+```{r}
+set.seed(1)
+
+caretSamp <- createDataPartition(col_ds$class, 
+                                        p = 0.7, 
+                                        list = FALSE)
+
+## SPLIT TESTING AND TRAINING
+trainCaret  <- col_ds[caretSamp, ]
+testCaret <- col_ds[-caretSamp, ]
+
+modsim <- glm(class~`r-i`, trainCaret, family="binomial")
+summary(modsim)
+```
+
+```{r}
+ggplot(trainCaret,aes(x=`r-i`,y=class)) +
+  geom_point() +
+  geom_line(aes(x=`r-i`,y=modsim$fitted),color="blue")
+  
+```
+
+## Logistic Regression
+
+```{r}
+mod1 <- glm(class~`r-i`+`u-g`, trainCaret, family="binomial")
+summary(mod1)
+```
