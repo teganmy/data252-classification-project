@@ -1,0 +1,502 @@
+---
+title: "All Parts"
+author: "Gabriella Weis"
+date: "2026-03-31"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Part 1
+
+## Libraries and Data
+
+```{r,message=FALSE,warning=FALSE}
+library(tidyverse)
+library(GGally)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(class)
+library(ipred)
+library(randomForest)
+library(vip)
+library(xgboost)
+library(yardstick)
+library(colorspace)
+library(stats)
+library(factoextra)
+library(tidyr)
+```
+
+```{r}
+galaxy <- read_csv("galaxy.csv")
+qso <- read_csv("qso.csv")
+star <- read_csv("star.csv")
+```
+
+## Wrangling
+
+```{r}
+ds=star %>%
+  rbind(galaxy) %>%
+  rbind(qso) %>%
+  select(-specobjid,-objid,-redshift) %>%
+  mutate(class=as.factor(class)) %>%
+  mutate(`u-g`=u-g,`g-r`=g-r,`r-i`=r-i,`i-z`=i-z)
+head(ds)
+```
+
+## GGPairs
+
+```{r}
+ggpairs(ds, aes(color=class), columns=c("u-g","g-r","r-i","i-z"))
+```
+
+## Variables (all unitless)
+
+| Variable Name | Type | Definition |
+|------------------------|------------------------|------------------------|
+| class | categorical (3 levels) | category of object (star, quasar, galaxy) |
+| redshift | numeric | how fast an object is moving away from us |
+| u-g | numeric | color scale calculated from flux magnitudes u and g |
+| g-r | numeric | color scale calculated from flux magnitudes g and r |
+| r-i | numeric | color scale calculated from flux magnitudes r and i |
+| i-z | numeric | color scale calculated from flux magnitudes i and z |
+
+**Important Note**: During initial KNN and Classification Tree model creation, we noticed that redshift was too prevalent of a predictor, and often unatainable for use in real life. Therefore, we chose to exclude it from the models for the time being.
+
+## KNN and Classification Tree
+
+### Testing and Training Splits
+
+```{r}
+set.seed(1)
+
+caretSamp <- createDataPartition(ds$class , 
+                                        p = 0.7, 
+                                        list = FALSE)
+
+## SPLIT TESTING AND TRAINING
+trainCaret  <- ds[caretSamp, ]
+testCaret <- ds[-caretSamp, ]
+```
+
+### KNN
+
+```{r}
+set.seed(1)
+
+model <- train(
+  class ~., 
+  data = trainCaret, 
+  method = "knn",
+  trControl = trainControl("cv", number = 10),
+  preProcess = c("range"),
+  tuneLength = 20
+)
+# Plot model accuracy vs different values of k
+plot(model)
+
+# Print the best tuning parameter k that
+# maximizes model accuracy
+model$bestTune
+
+predicted.classes <- model %>% predict(testCaret)
+head(predicted.classes)
+
+# Compute model accuracy rate
+cmCaret<-table(predicted.classes, testCaret$class)
+#cmCaret
+
+### THE CARET WAY!
+confusionMatrix(cmCaret)
+```
+
+**Explanation**: The best value of k is 5, as determined by cross validation. The confusion matrix and accuracy rating (over 75%) shows that KNN produces a relatively good model. We noticed that it had some difficulty differentiating between galaxies and stars, which proved a theme across models.
+
+### Basic Tree
+
+```{r}
+set.seed(1)
+
+classTree<- rpart(class ~ .,
+                  data = trainCaret,
+                  method = "class"
+                  )
+
+### PLOT TREE
+rpart.plot(classTree)
+
+### Plot CP
+plotcp(classTree)
+
+printcp(classTree)
+
+## WHICH CP
+minCP<-classTree$cptable[which.min(classTree$cptable[,"xerror"]),"CP"]
+minCP
+```
+
+### Pruned Tree
+
+```{r}
+set.seed(1)
+
+prune_classTree <- rpart(class ~ .,
+                         data = trainCaret,
+                         method = "class",
+                         control = rpart.control(cp=minCP)
+                         )
+
+rpart.plot(prune_classTree)
+```
+
+### Unpruned vs. Pruned Predictions (Same)
+
+```{r}
+## DEFAULT TREE 
+### PREDICT
+predTree1<-predict(classTree, testCaret, type="class")
+
+### CONFUSION MATRIX
+cmTree1<-table(testCaret$class, predTree1)
+cmTree1
+
+#### CORRECT RATE
+mean(testCaret$class==predTree1)
+
+## PRUNED TREE 
+### PREDICT
+predTree2<-predict(prune_classTree, testCaret, type="class")
+
+### CONFUSION MATRIX
+cmTree2<-table(testCaret$class, predTree2)
+cmTree2
+
+#### CORRECT RATE
+mean(testCaret$class==predTree2)
+```
+
+**Explanation**: The classification tree was the same pruned as it was unpruned, and performed much better than the KNN model, as can be seen by the confusion matrix and the accuracy rating (over 90%). The star/galaxy classification uncertainty remains a problem, though significantly less so in this model.
+
+# Part 2
+
+## Bagging
+
+```{r}
+set.seed(1)
+
+pimaBag <- bagging(class ~ .,
+                   data = trainCaret,
+                   nbagg = 150,   
+                   coob = TRUE,
+                   control = rpart.control(minsplit = 2, cp = 0))
+
+## PREDICT
+predBag<-predict(pimaBag, testCaret, type="class")
+
+## CONFUSION MATRIX
+cmBag<-table(testCaret$class, predBag)
+cmBag
+
+## CORRECT RATE
+mean(testCaret$class==predBag)
+```
+
+## Random Forest
+
+```{r}
+set.seed(1)
+
+caretRF <- train(class ~., 
+               data = trainCaret, 
+               method = "rf",
+               trControl = trainControl("cv", number = 10),
+               importance = TRUE
+)
+# Best tuning parameter
+caretRF$bestTune
+
+# Final model
+caretRF$finalModel
+
+## PREDICT
+predCaretRF <- caretRF %>% predict(testCaret)
+
+## TABLE
+table(predCaretRF, testCaret$class)
+
+## MEAN
+mean(predCaretRF == testCaret$class)
+```
+
+```{r}
+# Plot MeanDecreaseAccuracy
+varImpPlot(caretRF$finalModel, type = 1)
+# Plot MeanDecreaseGini
+varImpPlot(caretRF$finalModel, type = 2)
+
+vip(caretRF$finalModel, type = 1) 
+vip(caretRF$finalModel, type = 2)
+```
+
+## Boosting
+
+```{r, warning=FALSE}
+library(tidymodels)
+
+# Define the model
+xgb_model <- boost_tree() %>%
+  set_engine("xgboost") %>%
+  set_mode("classification")
+
+# Define the workflow
+xgb_workflow <- workflow() %>%
+  add_model(xgb_model) %>%
+  add_formula(class ~.)
+
+# Define 10-fold cross-validation
+cv_folds <- vfold_cv(trainCaret, v = 10)
+
+# Fit with resampling
+xgb_results <- fit_resamples(
+  xgb_workflow,
+  resamples = cv_folds,
+  control = control_resamples(save_pred = TRUE)
+)
+
+# View CV metrics
+collect_metrics(xgb_results)
+
+# Fit final model on full training data
+final_fit <- fit(xgb_workflow, data = trainCaret)
+
+# Make predictions on the test data
+predBoost <- final_fit %>% predict(testCaret)
+
+## TABLE
+table(predBoost$.pred_class, testCaret$class)
+
+mean(predBoost$.pred_class == testCaret$class)
+```
+
+# Part 3
+
+## Collapse Categorical Variable
+
+```{r}
+col_ds=ds %>%
+  filter(class!="QSO") %>%
+  mutate(class=ifelse(class=="STAR",0,1))
+
+head(col_ds)
+```
+
+## Simple Logistic Regression
+
+```{r}
+set.seed(1)
+
+caretSamp2 <- createDataPartition(col_ds$class, 
+                                        p = 0.7, 
+                                        list = FALSE)
+
+## SPLIT TESTING AND TRAINING
+trainCaret2  <- col_ds[caretSamp2, ]
+testCaret2 <- col_ds[-caretSamp2, ]
+
+modsim <- glm(class~`r-i`, trainCaret2, family="binomial")
+summary(modsim)
+```
+
+```{r}
+ggplot(trainCaret2,aes(x=`r-i`,y=class)) +
+  geom_point() +
+  geom_line(aes(x=`r-i`,y=modsim$fitted),color="blue")
+  
+```
+
+### Prediction
+
+```{r}
+#prediction
+pred1<-predict(modsim,testCaret2,type="response")
+head(pred1)
+```
+
+```{r}
+#confusion matrix
+conf_mat1<-data.frame(testOutcome=testCaret2$class, predOut=pred1>.5)
+table(conf_mat1$predOut, conf_mat1$testOutcome)
+
+## CORRECT RATE
+mean(conf_mat1$predOut==conf_mat1$testOutcome)
+```
+
+## Logistic Regression
+
+```{r}
+mod1 <- glm(class~ra+dec+`r-i`+`u-g`+`g-r`+`i-z`, trainCaret2, family="binomial")
+summary(mod1)
+```
+
+### Backward Selection & Prediction
+
+```{r}
+stats::step(mod1)
+```
+
+```{r}
+modbest<-glm(class~`r-i`+`g-r`+`i-z`, trainCaret2, family="binomial")
+summary(modbest)
+```
+
+```{r}
+#prediction
+pred2<-predict(modbest,testCaret2,type="response")
+head(pred2)
+```
+
+```{r}
+#confusion matrix
+conf_mat2<-data.frame(testOutcome=testCaret2$class, predOut=pred2>.5)
+table(conf_mat2$predOut, conf_mat2$testOutcome)
+
+## CORRECT RATE
+mean(conf_mat2$predOut==conf_mat2$testOutcome)
+```
+
+# Part 4: Extra Model (PCA)
+
+```{r}
+pca_ds <- ds[,c("u-g","g-r","r-i","i-z")]
+pca <- prcomp(pca_ds,scale=TRUE)
+summary(pca)
+pca$rotation
+```
+
+```{r}
+fviz_eig(pca)
+```
+
+```{r}
+fviz_pca_var(pca,col.var="steelblue")
+fviz_pca_var(pca,col.var="steelblue",axes=c(1,3))
+fviz_pca_var(pca,col.var="steelblue",axes=c(2,3))
+```
+
+```{r}
+groups  <-  ds$class
+fviz_pca_ind(pca,
+             col.ind = groups, # color by groups
+             palette = c("blue","red","green"),
+             addEllipses = TRUE, # Concentration ellipses
+             ellipse.type = "confidence",
+             legend.title = "Groups",
+             repel = FALSE,
+             label="none",
+             axes=c(1,2)
+)
+```
+
+# Part 5: Extra Visualizations
+
+## Trees (Pruned & Unpruned)
+
+```{r}
+#new predictions column
+con_tree=testCaret
+con_tree$pred=predTree1
+```
+
+```{r}
+#heatmap
+cm <- conf_mat(con_tree, class, pred)
+autoplot(cm, type="heatmap") +
+  scale_fill_continuous_sequential(palette="Peach") +
+  labs(title="Confusion Matrix: Unpruned Tree")
+```
+
+```{r}
+con_tree2=testCaret
+con_tree2$pred=predTree2
+```
+
+```{r}
+cm <- conf_mat(con_tree2, class, pred)
+autoplot(cm, type="heatmap") +
+  scale_fill_continuous_sequential(palette="Peach") +
+  labs(title="Confusion Matrix: Pruned Tree")
+```
+
+## Bagging
+
+```{r}
+con_bag=testCaret
+con_bag$pred=predBag
+```
+
+```{r}
+cm <- conf_mat(con_bag, class, pred)
+autoplot(cm, type="heatmap") +
+  scale_fill_continuous_sequential(palette="Peach") +
+  labs(title="Confusion Matrix: Bagging")
+```
+
+## Random Forest
+
+```{r}
+con_rf=testCaret
+con_rf$pred=predCaretRF
+```
+
+```{r}
+cm <- conf_mat(con_rf, class, pred)
+autoplot(cm, type="heatmap") +
+  scale_fill_continuous_sequential(palette="Peach") +
+  labs(title="Confusion Matrix: Random Forest")
+```
+
+## Boosting
+
+```{r}
+con_boost=testCaret
+con_boost$pred=predBoost$.pred_class
+```
+
+```{r}
+cm <- conf_mat(con_boost, class, pred)
+autoplot(cm, type="heatmap") +
+  scale_fill_continuous_sequential(palette="Peach") +
+  labs(title="Confusion Matrix: Boosting")
+```
+
+## Logistic Regression (Best Multiple)
+
+```{r}
+con_log=testCaret2
+con_log$pred=conf_mat2$predOut
+con_log=con_log %>%
+  mutate(class=as.factor(case_when(
+    class==0 ~ "STAR",
+    class==1 ~ "GALAXY")),
+    pred=as.factor(pred))
+```
+
+```{r}
+con_log=con_log %>%
+  mutate(pred_var=factor(case_when(
+    pred=="FALSE" ~ "STAR",
+    pred=="TRUE" ~ "GALAXY"
+  )))
+```
+
+```{r}
+cm <- conf_mat(con_log, class, pred_var)
+autoplot(cm, type="heatmap") +
+  scale_fill_continuous_sequential(palette="Peach") +
+  labs(title="Confusion Matrix: Best Multiple Logistic Regression")
+```
