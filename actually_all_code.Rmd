@@ -2,7 +2,9 @@
 title: "All Parts"
 author: "Gabriella Weis"
 date: "2026-03-31"
-output: html_document
+output:
+  pdf_document: default
+  html_document: default
 ---
 
 ```{r setup, include=FALSE}
@@ -414,7 +416,7 @@ pca$rotation
 ```
 
 ```{r}
-fviz_eig(pca)
+fviz_eig(pca, addlabels = TRUE)
 ```
 
 ```{r}
@@ -436,8 +438,41 @@ fviz_pca_ind(pca,
              axes=c(1,2)
 )
 ```
+```{r}
+#above plot, zoomed in
+
+groups  <-  ds$class
+fviz_pca_ind(pca,
+             col.ind = groups, # color by groups
+             palette = c("blue","red","green"),
+             addEllipses = TRUE, # Concentration ellipses
+             ellipse.type = "confidence",
+             legend.title = "Groups",
+             repel = FALSE,
+             label="none",
+             axes=c(1,2),
+             xlim = c(-4, 4),
+             ylim = c(-3, 3)
+)
+```
 
 # Part 5: Extra Visualizations
+
+## KNN
+
+```{r}
+con_knn=testCaret
+con_knn$pred=predicted.classes
+```
+
+```{r}
+cm <- conf_mat(con_knn, class, pred)
+autoplot(cm, type="heatmap") +
+  scale_fill_continuous_sequential(palette="Peach") +
+  labs(title="Confusion Matrix: KNN")
+```
+
+
 
 ## Trees (Pruned & Unpruned)
 
